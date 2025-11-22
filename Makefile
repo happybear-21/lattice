@@ -3,7 +3,6 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic
 LDFLAGS :=
 LDLIBS :=
 
-# Set USE_READLINE=0 to build without readline/history support.
 USE_READLINE ?= 1
 ifeq ($(USE_READLINE),1)
   CXXFLAGS += -DLATTICE_USE_READLINE
