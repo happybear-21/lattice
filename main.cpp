@@ -27,8 +27,8 @@ const char* kHelpText =
     "Lattice quick help:\n"
     "  - Scalars: default numbers are real; complex results print as (a,b).\n"
     "  - Complex constructor: complex(real_part, imag_part)\n"
-    "  - Vectors: [1, 2, 3], elementwise + - * / with scalars or same-size "
-    "vectors.\n"
+    "  - Vectors: [1, 2, 3], elementwise + -; * allowed only scalar*vector.\n"
+    "    Vector helpers: zeros(n), ones(n), copy(v), dot(a, b) (alias scalar).\n"
     "  - Assignment: x = 5, v = [1,2]. Last value in ans.\n"
     "  - Print: print expr\n"
     "  - Input: input name   (prompts on the next line)\n"
@@ -169,6 +169,10 @@ Value subtract(const Value& a, const Value& b) {
 }
 
 Value multiply(const Value& a, const Value& b) {
+    if (a.isVector() && b.isVector()) {
+        throw std::runtime_error(
+            "Vector-vector '*' is not allowed; use dot(a, b) instead");
+    }
     return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs * rhs; },
                          "multiplication");
 }
@@ -424,6 +428,14 @@ class Parser {
             throw std::runtime_error(name + " expects scalar arguments");
         }
         return v.data;
+    }
+
+    const std::vector<std::complex<double>>&
+    requireVector(const std::string& name, const Value& v) const {
+        if (!v.isVector()) {
+            throw std::runtime_error(name + " expects vector arguments");
+        }
+        return v.vec;
     }
 
     bool isInteger(double value) const {
@@ -847,6 +859,43 @@ class Parser {
             }
             return Value(sum);
         }
+        if (name == "copy") {
+            expectCount(name, 1, args.size());
+            const auto& v = requireVector(name, args[0]);
+            return Value(v);
+        }
+        if (name == "zeros") {
+            expectCount(name, 1, args.size());
+            long long n = asInteger(name, args[0]);
+            if (n < 0) {
+                throw std::runtime_error("zeros expects non-negative length");
+            }
+            return Value(std::vector<std::complex<double>>(
+                static_cast<std::size_t>(n), std::complex<double>(0.0, 0.0)));
+        }
+        if (name == "ones") {
+            expectCount(name, 1, args.size());
+            long long n = asInteger(name, args[0]);
+            if (n < 0) {
+                throw std::runtime_error("ones expects non-negative length");
+            }
+            return Value(std::vector<std::complex<double>>(
+                static_cast<std::size_t>(n), std::complex<double>(1.0, 0.0)));
+        }
+        if (name == "dot" || name == "scalar") {
+            expectCount(name, 2, args.size());
+            const auto& a = requireVector(name, args[0]);
+            const auto& b = requireVector(name, args[1]);
+            if (a.size() != b.size()) {
+                throw std::runtime_error(name +
+                                         " expects vectors of equal length");
+            }
+            std::complex<double> sum(0.0, 0.0);
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                sum += a[i] * b[i];
+            }
+            return Value(sum);
+        }
         if (name == "phase") {
             expectCount(name, 1, args.size());
             return Value(std::arg(requireScalar(name, args[0])));
@@ -1017,7 +1066,7 @@ std::optional<std::string> readInput(const std::string& prompt) {
 #endif
 }
 
-void repl() {
+std::unordered_map<std::string, Value> makeDefaultEnv() {
     std::unordered_map<std::string, Value> env;
     env.reserve(256);
     env["pi"] = Value(3.14159265358979323846);
@@ -1029,6 +1078,11 @@ void repl() {
         std::complex<double>(0.0, std::numeric_limits<double>::infinity()));
     env["nanj"] = Value(
         std::complex<double>(0.0, std::numeric_limits<double>::quiet_NaN()));
+    return env;
+}
+
+void repl() {
+    std::unordered_map<std::string, Value> env = makeDefaultEnv();
     std::string line;
     std::cout << "Lattice REPL (type 'quit' or 'exit' to leave)\n";
     while (true) {
@@ -1065,9 +1119,11 @@ void repl() {
 
 } // namespace lattice
 
+#ifndef LATTICE_NO_REPL_MAIN
 int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
     lattice::repl();
     return 0;
 }
+#endif
