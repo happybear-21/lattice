@@ -6,6 +6,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -20,63 +21,197 @@
 namespace lattice {
 
 const std::unordered_set<std::string> kReservedNames = {
-    "pi", "tau", "e", "inf", "nan", "infj", "nanj"};
+    "pi", "tau", "e", "inf", "nan", "infj", "nanj", "print", "input"};
+
+const char* kHelpText =
+    "Lattice quick help:\n"
+    "  - Scalars: default numbers are real; complex results print as (a,b).\n"
+    "  - Complex constructor: complex(real_part, imag_part)\n"
+    "  - Vectors: [1, 2, 3], elementwise + - * / with scalars or same-size "
+    "vectors.\n"
+    "  - Assignment: x = 5, v = [1,2]. Last value in ans.\n"
+    "  - Print: print expr\n"
+    "  - Input: input name   (prompts on the next line)\n"
+    "  - Constants: pi, tau, e, inf, nan, infj, nanj\n"
+    "  - Functions: trig (sin/cos/tan...), exp/log variants, factorial, gcd, "
+    "lcm, comb, perm, dist, hypot, fsum, prod, sumprod, phase, polar, rect, "
+    "and more. See source for full list.\n"
+    "Type quit or exit to leave.\n";
 
 struct Value {
+    enum class Kind { Scalar, Vector };
+
+    Kind kind = Kind::Scalar;
     std::complex<double> data;
+    std::vector<std::complex<double>> vec;
 
     Value()
-        : data(0.0, 0.0) {}
+        : kind(Kind::Scalar)
+        , data(0.0, 0.0) {}
     explicit Value(double real)
-        : data(real, 0.0) {}
+        : kind(Kind::Scalar)
+        , data(real, 0.0) {}
     explicit Value(std::complex<double> value)
-        : data(value) {}
+        : kind(Kind::Scalar)
+        , data(value) {}
+    explicit Value(std::vector<std::complex<double>> values)
+        : kind(Kind::Vector)
+        , data(0.0, 0.0)
+        , vec(std::move(values)) {}
+
+    bool isScalar() const {
+        return kind == Kind::Scalar;
+    }
+
+    bool isVector() const {
+        return kind == Kind::Vector;
+    }
 
     double real() const {
+        if (!isScalar()) {
+            throw std::runtime_error("Expected scalar value");
+        }
         return data.real();
     }
 
     double imag() const {
+        if (!isScalar()) {
+            throw std::runtime_error("Expected scalar value");
+        }
         return data.imag();
     }
 
     bool isZero() const {
+        if (!isScalar()) {
+            throw std::runtime_error("Expected scalar value");
+        }
         return data.real() == 0.0 && data.imag() == 0.0;
     }
 };
 
+std::string complexToString(const std::complex<double>& c) {
+    std::ostringstream oss;
+    if (c.imag() == 0.0) {
+        oss << c.real();
+        return oss.str();
+    }
+    oss << c;
+    return oss.str();
+}
+
+std::string toString(const Value& v) {
+    if (v.isScalar()) {
+        return complexToString(v.data);
+    }
+    std::ostringstream oss;
+    oss << '[';
+    for (std::size_t i = 0; i < v.vec.size(); ++i) {
+        if (i != 0) {
+            oss << ", ";
+        }
+        oss << complexToString(v.vec[i]);
+    }
+    oss << ']';
+    return oss.str();
+}
+
+void printValue(const Value& v) {
+    std::cout << toString(v) << '\n';
+}
+
+bool isZero(const std::complex<double>& c) {
+    return c.real() == 0.0 && c.imag() == 0.0;
+}
+
+template <typename Op>
+Value elementwiseOp(const Value& a, const Value& b, Op op,
+                    const std::string& name) {
+    if (a.isScalar() && b.isScalar()) {
+        return Value(op(a.data, b.data));
+    }
+    if (a.isVector() && b.isScalar()) {
+        std::vector<std::complex<double>> result = a.vec;
+        for (auto& val : result) {
+            val = op(val, b.data);
+        }
+        return Value(std::move(result));
+    }
+    if (a.isScalar() && b.isVector()) {
+        std::vector<std::complex<double>> result = b.vec;
+        for (auto& val : result) {
+            val = op(a.data, val);
+        }
+        return Value(std::move(result));
+    }
+    if (a.isVector() && b.isVector()) {
+        if (a.vec.size() != b.vec.size()) {
+            throw std::runtime_error(name +
+                                     " expects vectors of the same length");
+        }
+        std::vector<std::complex<double>> result;
+        result.reserve(a.vec.size());
+        for (std::size_t i = 0; i < a.vec.size(); ++i) {
+            result.push_back(op(a.vec[i], b.vec[i]));
+        }
+        return Value(std::move(result));
+    }
+    throw std::runtime_error("Unsupported operands for " + name);
+}
+
 Value add(const Value& a, const Value& b) {
-    return Value(a.data + b.data);
+    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs + rhs; },
+                         "addition");
 }
 
 Value subtract(const Value& a, const Value& b) {
-    return Value(a.data - b.data);
+    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs - rhs; },
+                         "subtraction");
 }
 
 Value multiply(const Value& a, const Value& b) {
-    return Value(a.data * b.data);
+    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs * rhs; },
+                         "multiplication");
 }
 
 Value divide(const Value& a, const Value& b) {
-    if (b.isZero()) {
+    if (b.isScalar() && b.isZero()) {
         throw std::runtime_error("Division by zero.");
     }
-    return Value(a.data / b.data);
+    if (b.isVector()) {
+        for (const auto& val : b.vec) {
+            if (isZero(val)) {
+                throw std::runtime_error("Division by zero.");
+            }
+        }
+    }
+    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs / rhs; },
+                         "division");
 }
 
 Value negate(const Value& v) {
-    return Value(-v.data);
+    if (v.isScalar()) {
+        return Value(-v.data);
+    }
+    std::vector<std::complex<double>> result = v.vec;
+    for (auto& entry : result) {
+        entry = -entry;
+    }
+    return Value(std::move(result));
 }
 
 enum class TokenType {
     Number,
     Identifier,
+    Print,
+    Input,
     Plus,
     Minus,
     Star,
     Slash,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Equal,
     Comma,
     End
@@ -125,6 +260,12 @@ class Lexer {
                     break;
                 case ')':
                     tokens.push_back(simple(TokenType::RParen, ")"));
+                    break;
+                case '[':
+                    tokens.push_back(simple(TokenType::LBracket, "["));
+                    break;
+                case ']':
+                    tokens.push_back(simple(TokenType::RBracket, "]"));
                     break;
                 case ',':
                     tokens.push_back(simple(TokenType::Comma, ","));
@@ -202,12 +343,25 @@ class Lexer {
                 break;
             }
         }
+        if (id == "print") {
+            return Token{TokenType::Print, id};
+        }
+        if (id == "input") {
+            return Token{TokenType::Input, id};
+        }
         return Token{TokenType::Identifier, id};
     }
 
     std::string source_;
     std::size_t current_ = 0;
 };
+
+struct ParseResult {
+    Value value;
+    bool suppressOutput = false;
+};
+
+std::optional<std::string> readInput(const std::string& prompt);
 
 class Parser {
   public:
@@ -216,7 +370,37 @@ class Parser {
         : tokens_(std::move(tokens))
         , env_(env) {}
 
-    Value parse() {
+    ParseResult parse() {
+        if (check(TokenType::Print)) {
+            advance();
+            Value value = expression();
+            consume(TokenType::End, "Expected end of input after print.");
+            printValue(value);
+            return {value, true};
+        }
+        if (check(TokenType::Input)) {
+            advance();
+            if (!check(TokenType::Identifier)) {
+                throw std::runtime_error(
+                    "input expects an identifier destination");
+            }
+            auto nameToken = advance();
+            if (kReservedNames.count(nameToken.lexeme)) {
+                throw std::runtime_error("Cannot assign to constant " +
+                                         nameToken.lexeme);
+            }
+            consume(TokenType::End, "Expected end of input after input.");
+            auto line = readInput("input> ");
+            if (!line.has_value()) {
+                throw std::runtime_error("No input provided");
+            }
+            Lexer nestedLexer(*line);
+            auto nestedTokens = nestedLexer.tokenize();
+            Parser nestedParser(std::move(nestedTokens), env_);
+            ParseResult nestedResult = nestedParser.parse();
+            env_[nameToken.lexeme] = nestedResult.value;
+            return {nestedResult.value, false};
+        }
         if (check(TokenType::Identifier) && checkNext(TokenType::Equal)) {
             auto name = advance().lexeme;
             if (kReservedNames.count(name)) {
@@ -226,23 +410,32 @@ class Parser {
             Value value = expression();
             env_[name] = value;
             consume(TokenType::End, "Expected end of input after assignment.");
-            return value;
+            return {value, false};
         }
         Value value = expression();
         consume(TokenType::End, "Expected end of input after expression.");
-        return value;
+        return {value, false};
     }
 
   private:
+    const std::complex<double>& requireScalar(const std::string& name,
+                                              const Value& v) const {
+        if (!v.isScalar()) {
+            throw std::runtime_error(name + " expects scalar arguments");
+        }
+        return v.data;
+    }
+
     bool isInteger(double value) const {
         return std::isfinite(value) && std::floor(value) == value;
     }
 
     double requireReal(const std::string& name, const Value& v) const {
-        if (v.imag() != 0.0) {
+        const std::complex<double>& scalar = requireScalar(name, v);
+        if (scalar.imag() != 0.0) {
             throw std::runtime_error(name + " expects real arguments");
         }
-        return v.real();
+        return scalar.real();
     }
 
     long long asInteger(const std::string& name, const Value& v) const {
@@ -402,76 +595,79 @@ class Parser {
         }
         if (name == "pow") {
             expectCount(name, 2, args.size());
-            return Value(std::pow(args[0].data, args[1].data));
+            return Value(std::pow(requireScalar(name, args[0]),
+                                  requireScalar(name, args[1])));
         }
         if (name == "cbrt") {
             expectCount(name, 1, args.size());
-            return Value(std::pow(args[0].data, 1.0 / 3.0));
+            return Value(std::pow(requireScalar(name, args[0]), 1.0 / 3.0));
         }
         if (name == "sqrt") {
             expectCount(name, 1, args.size());
-            return Value(std::sqrt(args[0].data));
+            return Value(std::sqrt(requireScalar(name, args[0])));
         }
         if (name == "exp") {
             expectCount(name, 1, args.size());
-            return Value(std::exp(args[0].data));
+            return Value(std::exp(requireScalar(name, args[0])));
         }
         if (name == "exp2") {
             expectCount(name, 1, args.size());
-            return Value(
-                std::pow(std::complex<double>(2.0, 0.0), args[0].data));
+            return Value(std::pow(std::complex<double>(2.0, 0.0),
+                                  requireScalar(name, args[0])));
         }
         if (name == "expm1") {
             expectCount(name, 1, args.size());
-            return Value(std::exp(args[0].data) -
+            return Value(std::exp(requireScalar(name, args[0])) -
                          std::complex<double>(1.0, 0.0));
         }
         if (name == "log") {
             if (args.size() == 1) {
-                return Value(std::log(args[0].data));
+                return Value(std::log(requireScalar(name, args[0])));
             }
             if (args.size() == 2) {
-                return Value(std::log(args[0].data) / std::log(args[1].data));
+                return Value(std::log(requireScalar(name, args[0])) /
+                             std::log(requireScalar(name, args[1])));
             }
             throw std::runtime_error("Function log expects 1 or 2 argument(s)");
         }
         if (name == "log1p") {
             expectCount(name, 1, args.size());
             return Value(
-                std::log(std::complex<double>(1.0, 0.0) + args[0].data));
+                std::log(std::complex<double>(1.0, 0.0) +
+                         requireScalar(name, args[0])));
         }
         if (name == "log2") {
             expectCount(name, 1, args.size());
-            return Value(std::log(args[0].data) /
+            return Value(std::log(requireScalar(name, args[0])) /
                          std::log(std::complex<double>(2.0, 0.0)));
         }
         if (name == "log10") {
             expectCount(name, 1, args.size());
-            return Value(std::log10(args[0].data));
+            return Value(std::log10(requireScalar(name, args[0])));
         }
         if (name == "sin") {
             expectCount(name, 1, args.size());
-            return Value(std::sin(args[0].data));
+            return Value(std::sin(requireScalar(name, args[0])));
         }
         if (name == "cos") {
             expectCount(name, 1, args.size());
-            return Value(std::cos(args[0].data));
+            return Value(std::cos(requireScalar(name, args[0])));
         }
         if (name == "tan") {
             expectCount(name, 1, args.size());
-            return Value(std::tan(args[0].data));
+            return Value(std::tan(requireScalar(name, args[0])));
         }
         if (name == "asin") {
             expectCount(name, 1, args.size());
-            return Value(std::asin(args[0].data));
+            return Value(std::asin(requireScalar(name, args[0])));
         }
         if (name == "acos") {
             expectCount(name, 1, args.size());
-            return Value(std::acos(args[0].data));
+            return Value(std::acos(requireScalar(name, args[0])));
         }
         if (name == "atan") {
             expectCount(name, 1, args.size());
-            return Value(std::atan(args[0].data));
+            return Value(std::atan(requireScalar(name, args[0])));
         }
         if (name == "atan2") {
             expectCount(name, 2, args.size());
@@ -480,27 +676,27 @@ class Parser {
         }
         if (name == "sinh") {
             expectCount(name, 1, args.size());
-            return Value(std::sinh(args[0].data));
+            return Value(std::sinh(requireScalar(name, args[0])));
         }
         if (name == "cosh") {
             expectCount(name, 1, args.size());
-            return Value(std::cosh(args[0].data));
+            return Value(std::cosh(requireScalar(name, args[0])));
         }
         if (name == "tanh") {
             expectCount(name, 1, args.size());
-            return Value(std::tanh(args[0].data));
+            return Value(std::tanh(requireScalar(name, args[0])));
         }
         if (name == "asinh") {
             expectCount(name, 1, args.size());
-            return Value(std::asinh(args[0].data));
+            return Value(std::asinh(requireScalar(name, args[0])));
         }
         if (name == "acosh") {
             expectCount(name, 1, args.size());
-            return Value(std::acosh(args[0].data));
+            return Value(std::acosh(requireScalar(name, args[0])));
         }
         if (name == "atanh") {
             expectCount(name, 1, args.size());
-            return Value(std::atanh(args[0].data));
+            return Value(std::atanh(requireScalar(name, args[0])));
         }
         if (name == "degrees") {
             expectCount(name, 1, args.size());
@@ -524,8 +720,8 @@ class Parser {
         }
         if (name == "isclose") {
             expectCount(name, 4, args.size());
-            std::complex<double> a = args[0].data;
-            std::complex<double> b = args[1].data;
+            std::complex<double> a = requireScalar(name, args[0]);
+            std::complex<double> b = requireScalar(name, args[1]);
             double rel = requireReal(name, args[2]);
             double absTol = requireReal(name, args[3]);
             double diff = std::abs(a - b);
@@ -535,19 +731,19 @@ class Parser {
         }
         if (name == "isfinite") {
             expectCount(name, 1, args.size());
-            auto c = args[0].data;
+            auto c = requireScalar(name, args[0]);
             return Value(
                 std::isfinite(c.real()) && std::isfinite(c.imag()) ? 1.0 : 0.0);
         }
         if (name == "isinf") {
             expectCount(name, 1, args.size());
-            auto c = args[0].data;
+            auto c = requireScalar(name, args[0]);
             return Value((std::isinf(c.real()) || std::isinf(c.imag())) ? 1.0
                                                                         : 0.0);
         }
         if (name == "isnan") {
             expectCount(name, 1, args.size());
-            auto c = args[0].data;
+            auto c = requireScalar(name, args[0]);
             return Value((std::isnan(c.real()) || std::isnan(c.imag())) ? 1.0
                                                                         : 0.0);
         }
@@ -617,7 +813,7 @@ class Parser {
         if (name == "fsum") {
             std::complex<double> sum(0.0, 0.0);
             for (const Value& v : args) {
-                sum += v.data;
+                sum += requireScalar(name, v);
             }
             return Value(sum);
         }
@@ -632,9 +828,9 @@ class Parser {
             if (args.empty()) {
                 throw std::runtime_error("prod expects at least one argument");
             }
-            std::complex<double> result = args[0].data;
+            std::complex<double> result = requireScalar(name, args[0]);
             for (std::size_t i = 1; i < args.size(); ++i) {
-                result *= args[i].data;
+                result *= requireScalar(name, args[i]);
             }
             return Value(result);
         }
@@ -646,18 +842,19 @@ class Parser {
             std::size_t half = args.size() / 2;
             std::complex<double> sum(0.0, 0.0);
             for (std::size_t i = 0; i < half; ++i) {
-                sum += args[i].data * args[half + i].data;
+                sum += requireScalar(name, args[i]) *
+                       requireScalar(name, args[half + i]);
             }
             return Value(sum);
         }
         if (name == "phase") {
             expectCount(name, 1, args.size());
-            return Value(std::arg(args[0].data));
+            return Value(std::arg(requireScalar(name, args[0])));
         }
         if (name == "polar") {
             expectCount(name, 1, args.size());
-            double r = std::abs(args[0].data);
-            double phi = std::arg(args[0].data);
+            double r = std::abs(requireScalar(name, args[0]));
+            double phi = std::arg(requireScalar(name, args[0]));
             return Value(std::complex<double>(r, phi));
         }
         if (name == "rect") {
@@ -665,6 +862,11 @@ class Parser {
             double r = requireReal(name, args[0]);
             double phi = requireReal(name, args[1]);
             return Value(std::polar(r, phi));
+        }
+        if (name == "complex") {
+            expectCount(name, 2, args.size());
+            return Value(std::complex<double>(requireReal(name, args[0]),
+                                              requireReal(name, args[1])));
         }
         throw std::runtime_error("Unknown function: " + name);
     }
@@ -744,6 +946,27 @@ class Parser {
         if (check(TokenType::Number)) {
             return Value(advance().number);
         }
+        if (check(TokenType::LBracket)) {
+            advance();
+            std::vector<std::complex<double>> elements;
+            if (!check(TokenType::RBracket)) {
+                while (true) {
+                    Value element = expression();
+                    if (!element.isScalar()) {
+                        throw std::runtime_error(
+                            "Vectors cannot contain other vectors");
+                    }
+                    elements.push_back(element.data);
+                    if (check(TokenType::Comma)) {
+                        advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            consume(TokenType::RBracket, "Expected ']'.");
+            return Value(std::move(elements));
+        }
         if (check(TokenType::Identifier)) {
             auto name = advance().lexeme;
             if (check(TokenType::LParen)) {
@@ -817,6 +1040,10 @@ void repl() {
         if (line == "quit" || line == "exit") {
             break;
         }
+        if (line == "help") {
+            std::cout << kHelpText;
+            continue;
+        }
         if (line.empty()) {
             continue;
         }
@@ -824,9 +1051,11 @@ void repl() {
             Lexer lexer(line);
             auto tokens = lexer.tokenize();
             Parser parser(std::move(tokens), env);
-            Value result = parser.parse();
-            env["ans"] = result;
-            std::cout << result.data << '\n';
+            ParseResult result = parser.parse();
+            env["ans"] = result.value;
+            if (!result.suppressOutput) {
+                printValue(result.value);
+            }
         } catch (const std::exception& ex) {
             std::cout << "Error: " << ex.what() << '\n';
         }
