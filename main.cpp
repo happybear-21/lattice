@@ -1,10 +1,11 @@
 
 #include <cctype>
 #include <cmath>
+#include <complex>
 #include <iostream>
 #include <limits>
-#include <optional>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -18,7 +19,54 @@
 
 namespace lattice {
 
-const std::unordered_set<std::string> kReservedNames = {"pi", "tau", "e", "inf", "nan"};
+const std::unordered_set<std::string> kReservedNames = {
+    "pi", "tau", "e", "inf", "nan", "infj", "nanj"};
+
+struct Value {
+    std::complex<double> data;
+
+    Value()
+        : data(0.0, 0.0) {}
+    explicit Value(double real)
+        : data(real, 0.0) {}
+    explicit Value(std::complex<double> value)
+        : data(value) {}
+
+    double real() const {
+        return data.real();
+    }
+
+    double imag() const {
+        return data.imag();
+    }
+
+    bool isZero() const {
+        return data.real() == 0.0 && data.imag() == 0.0;
+    }
+};
+
+Value add(const Value& a, const Value& b) {
+    return Value(a.data + b.data);
+}
+
+Value subtract(const Value& a, const Value& b) {
+    return Value(a.data - b.data);
+}
+
+Value multiply(const Value& a, const Value& b) {
+    return Value(a.data * b.data);
+}
+
+Value divide(const Value& a, const Value& b) {
+    if (b.isZero()) {
+        throw std::runtime_error("Division by zero.");
+    }
+    return Value(a.data / b.data);
+}
+
+Value negate(const Value& v) {
+    return Value(-v.data);
+}
 
 enum class TokenType {
     Number,
@@ -47,6 +95,7 @@ class Lexer {
 
     std::vector<Token> tokenize() {
         std::vector<Token> tokens;
+        tokens.reserve(source_.size());
         while (!isAtEnd()) {
             skipWhitespace();
             if (isAtEnd()) {
@@ -84,7 +133,8 @@ class Lexer {
                     tokens.push_back(simple(TokenType::Equal, "="));
                     break;
                 default:
-                    throw std::runtime_error(std::string("Unexpected character: ") + c);
+                    throw std::runtime_error(
+                        std::string("Unexpected character: ") + c);
                 }
                 advance();
             }
@@ -161,23 +211,24 @@ class Lexer {
 
 class Parser {
   public:
-    Parser(std::vector<Token> tokens, std::unordered_map<std::string, double>& env)
+    Parser(std::vector<Token> tokens,
+           std::unordered_map<std::string, Value>& env)
         : tokens_(std::move(tokens))
         , env_(env) {}
 
-    double parse() {
+    Value parse() {
         if (check(TokenType::Identifier) && checkNext(TokenType::Equal)) {
             auto name = advance().lexeme;
             if (kReservedNames.count(name)) {
                 throw std::runtime_error("Cannot assign to constant " + name);
             }
             advance();
-            double value = expression();
+            Value value = expression();
             env_[name] = value;
             consume(TokenType::End, "Expected end of input after assignment.");
             return value;
         }
-        double value = expression();
+        Value value = expression();
         consume(TokenType::End, "Expected end of input after expression.");
         return value;
     }
@@ -187,17 +238,26 @@ class Parser {
         return std::isfinite(value) && std::floor(value) == value;
     }
 
-    long long asInteger(const std::string& name, double value) const {
+    double requireReal(const std::string& name, const Value& v) const {
+        if (v.imag() != 0.0) {
+            throw std::runtime_error(name + " expects real arguments");
+        }
+        return v.real();
+    }
+
+    long long asInteger(const std::string& name, const Value& v) const {
+        double value = requireReal(name, v);
         if (!isInteger(value)) {
             throw std::runtime_error(name + " expects integer arguments");
         }
         return static_cast<long long>(value);
     }
 
-    void expectCount(const std::string& name, std::size_t expected, std::size_t actual) {
+    void expectCount(const std::string& name, std::size_t expected,
+                     std::size_t actual) {
         if (expected != actual) {
-            throw std::runtime_error("Function " + name + " expects " + std::to_string(expected) +
-                                     " argument(s)");
+            throw std::runtime_error("Function " + name + " expects " +
+                                     std::to_string(expected) + " argument(s)");
         }
     }
 
@@ -225,7 +285,7 @@ class Parser {
         return result;
     }
 
-    long long foldGcd(const std::vector<double>& args) {
+    long long foldGcd(const std::vector<Value>& args) {
         if (args.empty()) {
             throw std::runtime_error("gcd expects at least one argument");
         }
@@ -236,7 +296,7 @@ class Parser {
         return g;
     }
 
-    long long foldLcm(const std::vector<double>& args) {
+    long long foldLcm(const std::vector<Value>& args) {
         if (args.empty()) {
             throw std::runtime_error("lcm expects at least one argument");
         }
@@ -248,49 +308,53 @@ class Parser {
         return l;
     }
 
-    double applyFunction(const std::string& name, const std::vector<double>& args) {
+    Value applyFunction(const std::string& name,
+                        const std::vector<Value>& args) {
         constexpr double pi = 3.14159265358979323846;
         if (name == "ceil") {
             expectCount(name, 1, args.size());
-            return std::ceil(args[0]);
+            return Value(std::ceil(requireReal(name, args[0])));
         }
         if (name == "floor") {
             expectCount(name, 1, args.size());
-            return std::floor(args[0]);
+            return Value(std::floor(requireReal(name, args[0])));
         }
         if (name == "fabs") {
             expectCount(name, 1, args.size());
-            return std::fabs(args[0]);
+            return Value(std::fabs(requireReal(name, args[0])));
         }
         if (name == "trunc") {
             expectCount(name, 1, args.size());
-            return std::trunc(args[0]);
+            return Value(std::trunc(requireReal(name, args[0])));
         }
         if (name == "factorial") {
             expectCount(name, 1, args.size());
             long long n = asInteger(name, args[0]);
             if (n < 0) {
-                throw std::runtime_error("factorial expects a non-negative integer");
+                throw std::runtime_error(
+                    "factorial expects a non-negative integer");
             }
             double result = 1.0;
             for (long long i = 2; i <= n; ++i) {
                 result *= static_cast<double>(i);
             }
-            return result;
+            return Value(result);
         }
         if (name == "gcd") {
-            return static_cast<double>(foldGcd(args));
+            return Value(static_cast<double>(foldGcd(args)));
         }
         if (name == "lcm") {
-            return static_cast<double>(foldLcm(args));
+            return Value(static_cast<double>(foldLcm(args)));
         }
         if (name == "comb") {
             expectCount(name, 2, args.size());
-            return binomial(asInteger(name, args[0]), asInteger(name, args[1]));
+            return Value(
+                binomial(asInteger(name, args[0]), asInteger(name, args[1])));
         }
         if (name == "perm") {
             expectCount(name, 2, args.size());
-            return permutations(asInteger(name, args[0]), asInteger(name, args[1]));
+            return Value(permutations(asInteger(name, args[0]),
+                                      asInteger(name, args[1])));
         }
         if (name == "isqrt") {
             expectCount(name, 1, args.size());
@@ -298,273 +362,315 @@ class Parser {
             if (n < 0) {
                 throw std::runtime_error("isqrt expects non-negative integer");
             }
-            long long r = static_cast<long long>(std::sqrt(static_cast<double>(n)));
+            long long r =
+                static_cast<long long>(std::sqrt(static_cast<double>(n)));
             while ((r + 1) * (r + 1) <= n) {
                 ++r;
             }
             while (r * r > n) {
                 --r;
             }
-            return static_cast<double>(r);
+            return Value(static_cast<double>(r));
         }
         if (name == "fmod") {
             expectCount(name, 2, args.size());
-            return std::fmod(args[0], args[1]);
+            return Value(std::fmod(requireReal(name, args[0]),
+                                   requireReal(name, args[1])));
         }
         if (name == "remainder") {
             expectCount(name, 2, args.size());
-            return std::remainder(args[0], args[1]);
+            return Value(std::remainder(requireReal(name, args[0]),
+                                        requireReal(name, args[1])));
         }
         if (name == "fma") {
             expectCount(name, 3, args.size());
-            return std::fma(args[0], args[1], args[2]);
+            return Value(std::fma(requireReal(name, args[0]),
+                                  requireReal(name, args[1]),
+                                  requireReal(name, args[2])));
         }
         if (name == "copysign") {
             expectCount(name, 2, args.size());
-            return std::copysign(args[0], args[1]);
+            return Value(std::copysign(requireReal(name, args[0]),
+                                       requireReal(name, args[1])));
         }
         if (name == "modf") {
             expectCount(name, 1, args.size());
             double intPart = 0.0;
-            double frac = std::modf(args[0], &intPart);
-            env_["modf_int"] = intPart;
-            return frac;
+            double frac = std::modf(requireReal(name, args[0]), &intPart);
+            env_["modf_int"] = Value(intPart);
+            return Value(frac);
         }
         if (name == "pow") {
             expectCount(name, 2, args.size());
-            return std::pow(args[0], args[1]);
+            return Value(std::pow(args[0].data, args[1].data));
         }
         if (name == "cbrt") {
             expectCount(name, 1, args.size());
-            return std::cbrt(args[0]);
+            return Value(std::pow(args[0].data, 1.0 / 3.0));
         }
         if (name == "sqrt") {
             expectCount(name, 1, args.size());
-            return std::sqrt(args[0]);
+            return Value(std::sqrt(args[0].data));
         }
         if (name == "exp") {
             expectCount(name, 1, args.size());
-            return std::exp(args[0]);
+            return Value(std::exp(args[0].data));
         }
         if (name == "exp2") {
             expectCount(name, 1, args.size());
-            return std::exp2(args[0]);
+            return Value(
+                std::pow(std::complex<double>(2.0, 0.0), args[0].data));
         }
         if (name == "expm1") {
             expectCount(name, 1, args.size());
-            return std::expm1(args[0]);
+            return Value(std::exp(args[0].data) -
+                         std::complex<double>(1.0, 0.0));
         }
         if (name == "log") {
             if (args.size() == 1) {
-                return std::log(args[0]);
+                return Value(std::log(args[0].data));
             }
             if (args.size() == 2) {
-                return std::log(args[0]) / std::log(args[1]);
+                return Value(std::log(args[0].data) / std::log(args[1].data));
             }
             throw std::runtime_error("Function log expects 1 or 2 argument(s)");
         }
         if (name == "log1p") {
             expectCount(name, 1, args.size());
-            return std::log1p(args[0]);
+            return Value(
+                std::log(std::complex<double>(1.0, 0.0) + args[0].data));
         }
         if (name == "log2") {
             expectCount(name, 1, args.size());
-            return std::log2(args[0]);
+            return Value(std::log(args[0].data) /
+                         std::log(std::complex<double>(2.0, 0.0)));
         }
         if (name == "log10") {
             expectCount(name, 1, args.size());
-            return std::log10(args[0]);
+            return Value(std::log10(args[0].data));
         }
         if (name == "sin") {
             expectCount(name, 1, args.size());
-            return std::sin(args[0]);
+            return Value(std::sin(args[0].data));
         }
         if (name == "cos") {
             expectCount(name, 1, args.size());
-            return std::cos(args[0]);
+            return Value(std::cos(args[0].data));
         }
         if (name == "tan") {
             expectCount(name, 1, args.size());
-            return std::tan(args[0]);
+            return Value(std::tan(args[0].data));
         }
         if (name == "asin") {
             expectCount(name, 1, args.size());
-            return std::asin(args[0]);
+            return Value(std::asin(args[0].data));
         }
         if (name == "acos") {
             expectCount(name, 1, args.size());
-            return std::acos(args[0]);
+            return Value(std::acos(args[0].data));
         }
         if (name == "atan") {
             expectCount(name, 1, args.size());
-            return std::atan(args[0]);
+            return Value(std::atan(args[0].data));
         }
         if (name == "atan2") {
             expectCount(name, 2, args.size());
-            return std::atan2(args[0], args[1]);
+            return Value(std::atan2(requireReal(name, args[0]),
+                                    requireReal(name, args[1])));
         }
         if (name == "sinh") {
             expectCount(name, 1, args.size());
-            return std::sinh(args[0]);
+            return Value(std::sinh(args[0].data));
         }
         if (name == "cosh") {
             expectCount(name, 1, args.size());
-            return std::cosh(args[0]);
+            return Value(std::cosh(args[0].data));
         }
         if (name == "tanh") {
             expectCount(name, 1, args.size());
-            return std::tanh(args[0]);
+            return Value(std::tanh(args[0].data));
         }
         if (name == "asinh") {
             expectCount(name, 1, args.size());
-            return std::asinh(args[0]);
+            return Value(std::asinh(args[0].data));
         }
         if (name == "acosh") {
             expectCount(name, 1, args.size());
-            return std::acosh(args[0]);
+            return Value(std::acosh(args[0].data));
         }
         if (name == "atanh") {
             expectCount(name, 1, args.size());
-            return std::atanh(args[0]);
+            return Value(std::atanh(args[0].data));
         }
         if (name == "degrees") {
             expectCount(name, 1, args.size());
-            return args[0] * (180.0 / pi);
+            return Value(requireReal(name, args[0]) * (180.0 / pi));
         }
         if (name == "radians") {
             expectCount(name, 1, args.size());
-            return args[0] * (pi / 180.0);
+            return Value(requireReal(name, args[0]) * (pi / 180.0));
         }
         if (name == "frexp") {
             expectCount(name, 1, args.size());
             int exponent = 0;
-            double mantissa = std::frexp(args[0], &exponent);
-            env_["frexp_exp"] = static_cast<double>(exponent);
-            return mantissa;
+            double mantissa = std::frexp(requireReal(name, args[0]), &exponent);
+            env_["frexp_exp"] = Value(static_cast<double>(exponent));
+            return Value(mantissa);
         }
         if (name == "ldexp") {
             expectCount(name, 2, args.size());
-            return std::ldexp(args[0], asInteger(name, args[1]));
+            return Value(std::ldexp(requireReal(name, args[0]),
+                                    asInteger(name, args[1])));
         }
         if (name == "isclose") {
             expectCount(name, 4, args.size());
-            double a = args[0];
-            double b = args[1];
-            double rel = args[2];
-            double absTol = args[3];
-            double diff = std::fabs(a - b);
-            double limit = std::max(rel * std::max(std::fabs(a), std::fabs(b)), absTol);
-            return diff <= limit ? 1.0 : 0.0;
+            std::complex<double> a = args[0].data;
+            std::complex<double> b = args[1].data;
+            double rel = requireReal(name, args[2]);
+            double absTol = requireReal(name, args[3]);
+            double diff = std::abs(a - b);
+            double limit =
+                std::max(rel * std::max(std::abs(a), std::abs(b)), absTol);
+            return Value(diff <= limit ? 1.0 : 0.0);
         }
         if (name == "isfinite") {
             expectCount(name, 1, args.size());
-            return std::isfinite(args[0]) ? 1.0 : 0.0;
+            auto c = args[0].data;
+            return Value(
+                std::isfinite(c.real()) && std::isfinite(c.imag()) ? 1.0 : 0.0);
         }
         if (name == "isinf") {
             expectCount(name, 1, args.size());
-            return std::isinf(args[0]) ? 1.0 : 0.0;
+            auto c = args[0].data;
+            return Value((std::isinf(c.real()) || std::isinf(c.imag())) ? 1.0
+                                                                        : 0.0);
         }
         if (name == "isnan") {
             expectCount(name, 1, args.size());
-            return std::isnan(args[0]) ? 1.0 : 0.0;
+            auto c = args[0].data;
+            return Value((std::isnan(c.real()) || std::isnan(c.imag())) ? 1.0
+                                                                        : 0.0);
         }
         if (name == "nextafter") {
             if (args.size() != 2 && args.size() != 3) {
-                throw std::runtime_error("Function nextafter expects 2 or 3 argument(s)");
+                throw std::runtime_error(
+                    "Function nextafter expects 2 or 3 argument(s)");
             }
             long long steps = 1;
             if (args.size() == 3) {
                 steps = asInteger(name, args[2]);
                 if (steps < 0) {
-                    throw std::runtime_error("nextafter expects non-negative steps");
+                    throw std::runtime_error(
+                        "nextafter expects non-negative steps");
                 }
             }
-            double value = args[0];
+            double value = requireReal(name, args[0]);
+            double target = requireReal(name, args[1]);
             for (long long i = 0; i < steps; ++i) {
-                value = std::nextafter(value, args[1]);
+                value = std::nextafter(value, target);
             }
-            return value;
+            return Value(value);
         }
         if (name == "ulp") {
             expectCount(name, 1, args.size());
-            double x = args[0];
+            double x = requireReal(name, args[0]);
             if (std::isnan(x)) {
-                return std::numeric_limits<double>::quiet_NaN();
+                return Value(std::numeric_limits<double>::quiet_NaN());
             }
             if (std::isinf(x)) {
-                return std::numeric_limits<double>::infinity();
+                return Value(std::numeric_limits<double>::infinity());
             }
-            double next = std::nextafter(x, std::numeric_limits<double>::infinity());
-            return std::fabs(next - x);
+            double next =
+                std::nextafter(x, std::numeric_limits<double>::infinity());
+            return Value(std::fabs(next - x));
         }
         if (name == "gamma") {
             expectCount(name, 1, args.size());
-            return std::tgamma(args[0]);
+            return Value(std::tgamma(requireReal(name, args[0])));
         }
         if (name == "lgamma") {
             expectCount(name, 1, args.size());
-            return std::lgamma(args[0]);
+            return Value(std::lgamma(requireReal(name, args[0])));
         }
         if (name == "erf") {
             expectCount(name, 1, args.size());
-            return std::erf(args[0]);
+            return Value(std::erf(requireReal(name, args[0])));
         }
         if (name == "erfc") {
             expectCount(name, 1, args.size());
-            return std::erfc(args[0]);
+            return Value(std::erfc(requireReal(name, args[0])));
         }
         if (name == "dist") {
             if (args.size() % 2 != 0 || args.empty()) {
-                throw std::runtime_error("dist expects an even number of coordinates");
+                throw std::runtime_error(
+                    "dist expects an even number of coordinates");
             }
             std::size_t half = args.size() / 2;
             double sum = 0.0;
             for (std::size_t i = 0; i < half; ++i) {
-                double d = args[i] - args[half + i];
+                double d = requireReal(name, args[i]) -
+                           requireReal(name, args[half + i]);
                 sum += d * d;
             }
-            return std::sqrt(sum);
+            return Value(std::sqrt(sum));
         }
         if (name == "fsum") {
-            double sum = 0.0;
-            for (double v : args) {
-                sum += v;
+            std::complex<double> sum(0.0, 0.0);
+            for (const Value& v : args) {
+                sum += v.data;
             }
-            return sum;
+            return Value(sum);
         }
         if (name == "hypot") {
             double result = 0.0;
-            for (double v : args) {
-                result = std::hypot(result, v);
+            for (const Value& v : args) {
+                result = std::hypot(result, requireReal(name, v));
             }
-            return result;
+            return Value(result);
         }
         if (name == "prod") {
             if (args.empty()) {
                 throw std::runtime_error("prod expects at least one argument");
             }
-            double result = args[0];
+            std::complex<double> result = args[0].data;
             for (std::size_t i = 1; i < args.size(); ++i) {
-                result *= args[i];
+                result *= args[i].data;
             }
-            return result;
+            return Value(result);
         }
         if (name == "sumprod") {
             if (args.size() % 2 != 0 || args.empty()) {
-                throw std::runtime_error("sumprod expects an even number of arguments");
+                throw std::runtime_error(
+                    "sumprod expects an even number of arguments");
             }
             std::size_t half = args.size() / 2;
-            double sum = 0.0;
+            std::complex<double> sum(0.0, 0.0);
             for (std::size_t i = 0; i < half; ++i) {
-                sum += args[i] * args[half + i];
+                sum += args[i].data * args[half + i].data;
             }
-            return sum;
+            return Value(sum);
+        }
+        if (name == "phase") {
+            expectCount(name, 1, args.size());
+            return Value(std::arg(args[0].data));
+        }
+        if (name == "polar") {
+            expectCount(name, 1, args.size());
+            double r = std::abs(args[0].data);
+            double phi = std::arg(args[0].data);
+            return Value(std::complex<double>(r, phi));
+        }
+        if (name == "rect") {
+            expectCount(name, 2, args.size());
+            double r = requireReal(name, args[0]);
+            double phi = requireReal(name, args[1]);
+            return Value(std::polar(r, phi));
         }
         throw std::runtime_error("Unknown function: " + name);
     }
 
-    std::vector<double> parseArguments() {
-        std::vector<double> args;
+    std::vector<Value> parseArguments() {
+        std::vector<Value> args;
         if (check(TokenType::RParen)) {
             return args;
         }
@@ -602,44 +708,41 @@ class Parser {
         throw std::runtime_error(message);
     }
 
-    double expression() {
-        double value = term();
+    Value expression() {
+        Value value = term();
         while (check(TokenType::Plus) || check(TokenType::Minus)) {
             Token op = advance();
-            double right = term();
+            Value right = term();
             if (op.type == TokenType::Plus) {
-                value += right;
+                value = add(value, right);
             } else {
-                value -= right;
+                value = subtract(value, right);
             }
         }
         return value;
     }
 
-    double term() {
-        double value = factor();
+    Value term() {
+        Value value = factor();
         while (check(TokenType::Star) || check(TokenType::Slash)) {
             Token op = advance();
-            double right = factor();
+            Value right = factor();
             if (op.type == TokenType::Star) {
-                value *= right;
+                value = multiply(value, right);
             } else {
-                if (std::abs(right) < 1e-12) {
-                    throw std::runtime_error("Division by zero.");
-                }
-                value /= right;
+                value = divide(value, right);
             }
         }
         return value;
     }
 
-    double factor() {
+    Value factor() {
         if (check(TokenType::Minus)) {
             advance();
-            return -factor();
+            return negate(factor());
         }
         if (check(TokenType::Number)) {
-            return advance().number;
+            return Value(advance().number);
         }
         if (check(TokenType::Identifier)) {
             auto name = advance().lexeme;
@@ -657,7 +760,7 @@ class Parser {
         }
         if (check(TokenType::LParen)) {
             advance();
-            double value = expression();
+            Value value = expression();
             consume(TokenType::RParen, "Expected ')'.");
             return value;
         }
@@ -666,7 +769,7 @@ class Parser {
 
     std::vector<Token> tokens_;
     std::size_t current_ = 0;
-    std::unordered_map<std::string, double>& env_;
+    std::unordered_map<std::string, Value>& env_;
 };
 
 std::optional<std::string> readInput(const std::string& prompt) {
@@ -692,12 +795,17 @@ std::optional<std::string> readInput(const std::string& prompt) {
 }
 
 void repl() {
-    std::unordered_map<std::string, double> env;
-    env["pi"] = 3.14159265358979323846;
-    env["tau"] = 6.28318530717958647692;
-    env["e"] = 2.71828182845904523536;
-    env["inf"] = std::numeric_limits<double>::infinity();
-    env["nan"] = std::numeric_limits<double>::quiet_NaN();
+    std::unordered_map<std::string, Value> env;
+    env.reserve(256);
+    env["pi"] = Value(3.14159265358979323846);
+    env["tau"] = Value(6.28318530717958647692);
+    env["e"] = Value(2.71828182845904523536);
+    env["inf"] = Value(std::numeric_limits<double>::infinity());
+    env["nan"] = Value(std::numeric_limits<double>::quiet_NaN());
+    env["infj"] = Value(
+        std::complex<double>(0.0, std::numeric_limits<double>::infinity()));
+    env["nanj"] = Value(
+        std::complex<double>(0.0, std::numeric_limits<double>::quiet_NaN()));
     std::string line;
     std::cout << "Lattice REPL (type 'quit' or 'exit' to leave)\n";
     while (true) {
@@ -716,9 +824,9 @@ void repl() {
             Lexer lexer(line);
             auto tokens = lexer.tokenize();
             Parser parser(std::move(tokens), env);
-            double result = parser.parse();
+            Value result = parser.parse();
             env["ans"] = result;
-            std::cout << result << '\n';
+            std::cout << result.data << '\n';
         } catch (const std::exception& ex) {
             std::cout << "Error: " << ex.what() << '\n';
         }
@@ -729,6 +837,8 @@ void repl() {
 } // namespace lattice
 
 int main() {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
     lattice::repl();
     return 0;
 }
