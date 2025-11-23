@@ -28,7 +28,8 @@ const char* kHelpText =
     "  - Scalars: default numbers are real; complex results print as (a,b).\n"
     "  - Complex constructor: complex(real_part, imag_part)\n"
     "  - Vectors: [1, 2, 3], elementwise + -; * allowed only scalar*vector.\n"
-    "    Vector helpers: zeros(n), ones(n), copy(v), dot(a, b) (alias scalar).\n"
+    "    Vector helpers: zeros(n), ones(n), copy(v), dot(a, b) (alias "
+    "scalar).\n"
     "  - Assignment: x = 5, v = [1,2]. Last value in ans.\n"
     "  - Print: print expr\n"
     "  - Input: input name   (prompts on the next line)\n"
@@ -159,13 +160,13 @@ Value elementwiseOp(const Value& a, const Value& b, Op op,
 }
 
 Value add(const Value& a, const Value& b) {
-    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs + rhs; },
-                         "addition");
+    return elementwiseOp(
+        a, b, [](auto lhs, auto rhs) { return lhs + rhs; }, "addition");
 }
 
 Value subtract(const Value& a, const Value& b) {
-    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs - rhs; },
-                         "subtraction");
+    return elementwiseOp(
+        a, b, [](auto lhs, auto rhs) { return lhs - rhs; }, "subtraction");
 }
 
 Value multiply(const Value& a, const Value& b) {
@@ -173,8 +174,8 @@ Value multiply(const Value& a, const Value& b) {
         throw std::runtime_error(
             "Vector-vector '*' is not allowed; use dot(a, b) instead");
     }
-    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs * rhs; },
-                         "multiplication");
+    return elementwiseOp(
+        a, b, [](auto lhs, auto rhs) { return lhs * rhs; }, "multiplication");
 }
 
 Value divide(const Value& a, const Value& b) {
@@ -188,8 +189,8 @@ Value divide(const Value& a, const Value& b) {
             }
         }
     }
-    return elementwiseOp(a, b, [](auto lhs, auto rhs) { return lhs / rhs; },
-                         "division");
+    return elementwiseOp(
+        a, b, [](auto lhs, auto rhs) { return lhs / rhs; }, "division");
 }
 
 Value negate(const Value& v) {
@@ -644,9 +645,8 @@ class Parser {
         }
         if (name == "log1p") {
             expectCount(name, 1, args.size());
-            return Value(
-                std::log(std::complex<double>(1.0, 0.0) +
-                         requireScalar(name, args[0])));
+            return Value(std::log(std::complex<double>(1.0, 0.0) +
+                                  requireScalar(name, args[0])));
         }
         if (name == "log2") {
             expectCount(name, 1, args.size());
@@ -1119,11 +1119,9 @@ void repl() {
 
 } // namespace lattice
 
-#ifndef LATTICE_NO_REPL_MAIN
 int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
     lattice::repl();
     return 0;
 }
-#endif
